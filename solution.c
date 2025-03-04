@@ -1,93 +1,76 @@
 #include <stdio.h>
-#include <string.h>
 #include <stdlib.h>
+#include <string.h>
+#include <openssl/evp.h>
+#include <stdint.h>
 #include <time.h>
-#include <openssl/md5.h>
+#include <unistd.h>  
 
-#define HASH_BITS 5 // Number of hex characters to match
-#define MAX_STRING_LENGTH 26 // Max random string length
+#define HASH_SIZE 3  
 
-typedef char string15[16]; // Defines a fixed-size string type
+void hash_message(const char *message, unsigned char *hash_output) {
+    EVP_MD_CTX *mdctx = EVP_MD_CTX_create();
+    const EVP_MD *md = EVP_sha256();
+    unsigned char full_hash[EVP_MAX_MD_SIZE];
+    unsigned int md_len;
 
-// Function to compute MD5 hash and return the first `HASH_BITS` hex chars
-void md5_hash(const char *input, string15 output) {
-    unsigned char digest[MD5_DIGEST_LENGTH];
-    MD5((unsigned char*)input, strlen(input), digest);
-
-    for (int i = 0; i < HASH_BITS; i++) {
-        sprintf(output + (i * 2), "%02x", digest[i]);
+    if (!mdctx) {
+        fprintf(stderr, "Error creating EVP_MD_CTX\n");
+        exit(1);
     }
-    output[HASH_BITS * 2] = '\0';
+
+    EVP_DigestInit_ex(mdctx, md, NULL);
+    EVP_DigestUpdate(mdctx, message, strlen(message));
+    EVP_DigestFinal_ex(mdctx, full_hash, &md_len);
+    EVP_MD_CTX_destroy(mdctx);
+
+    memcpy(hash_output, full_hash, HASH_SIZE);  
 }
 
-// Function to generate a random string of given length
-void generate_random_string(char *str, int length) {
-    const char charset[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!@#$%^&*()";
-    for (int i = 0; i < length; i++) {
-        str[i] = charset[rand() % (sizeof(charset) - 1)];
-    }
-    str[length] = '\0';
+
+uint32_t hash_to_int(const unsigned char *hash) {
+    return (hash[0] << 16) | (hash[1] << 8) | hash[2];
 }
 
-// Brute-force preimage attack (One-way property)
-void one_way_property(const char *original_msg) {
-    string15 original_hash, candidate_hash;
-    char random_string[MAX_STRING_LENGTH + 1];
-    int attempts = 0;
 
-    md5_hash(original_msg, original_hash);
-    
-    do {
-        attempts++;
-        int length = (rand() % MAX_STRING_LENGTH) + 1;
-        generate_random_string(random_string, length);
-        md5_hash(random_string, candidate_hash);
-    } while (strncmp(original_hash, candidate_hash, HASH_BITS * 2) != 0);
-
-    printf("\nONE-WAY PROPERTY:\n");
-    printf("Original Message: %s\nHash: %s\n", original_msg, original_hash);
-    printf("Matching Random String: %s\nHash: %s\n", random_string, candidate_hash);
-    printf("Attempts: %d\n", attempts);
-}
-
-// Brute-force collision attack (Collision-free property)
-void collision_free_property() {
-    char random_string[MAX_STRING_LENGTH + 1];
-    string15 hash;
-    char *hash_table[1 << 16] = {0}; // Simple hash table to store hashes
-    int attempts = 0;
-
-    srand(time(NULL));
+void one_way_attack(const unsigned char *target_hash) {
+    char test_message[32];
+    unsigned char test_hash[HASH_SIZE];
+    uint32_t trials = 0;
 
     while (1) {
-        attempts++;
-        int length = (rand() % MAX_STRING_LENGTH) + 1;
-        generate_random_string(random_string, length);
-        md5_hash(random_string, hash);
+        snprintf(test_message, sizeof(test_message), "msg-%u-%d", trials, rand());  
+        hash_message(test_message, test_hash);
+        uint32_t hash_value = hash_to_int(test_hash);
 
-        unsigned int index = strtol(hash, NULL, 16) % (1 << 16); // Reduce collisions
+        // For debugging
+        if (trials < 5) {
+            printf("Trial %u: %s -> Hash: %02x%02x%02x (%u)\n",
+                   trials, test_message, test_hash[0], test_hash[1], test_hash[2], hash_value);
+        }
 
-        if (hash_table[index] != NULL) {
-            printf("\nCOLLISION FOUND:\n");
-            printf("Message 1: %s\nHash: %s\n", hash_table[index], hash);
-            printf("Message 2: %s\nHash: %s\n", random_string, hash);
-            printf("Attempts: %d\n", attempts);
-            free(hash_table[index]);
+        if (hash_value == hash_to_int(target_hash)) {
+            printf("\nPreimage found after %u trials!\n", trials);
+            printf("Original Message: %s\n", test_message);
             break;
         }
 
-        hash_table[index] = strdup(random_string);
+        trials++;
     }
 }
 
 int main() {
-    srand(time(NULL));
-    clock_t start = clock();
+    srand(time(NULL) ^ getpid());  
 
-    one_way_property("Breaking one-way property");
-    printf("\n------------------------------------------------------\n");
-    collision_free_property();
+    const char *target_message = "secret";
+    unsigned char target_hash[HASH_SIZE];
+    hash_message(target_message, target_hash);
 
-    printf("\nExecution Time: %.2f seconds\n", (double)(clock() - start) / CLOCKS_PER_SEC);
+    printf("Target Message: %s\n", target_message);
+    printf("Target Hash: %02x%02x%02x\n", target_hash[0], target_hash[1], target_hash[2]);
+
+    printf("Starting brute-force attack on one-way property...\n");
+    one_way_attack(target_hash);
+   
     return 0;
 }
